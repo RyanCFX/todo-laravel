@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Task extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory;
 
     public $timestamps = false;
     protected $table = 'tasks';
@@ -21,6 +21,7 @@ class Task extends Model
         'title',
         'description',
         'status',
+        'status_code',
         'due_date',
         'reminder_offset_minutes',
         'role_id',

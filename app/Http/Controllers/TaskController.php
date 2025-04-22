@@ -7,25 +7,74 @@ use App\Models\TaskHistory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Ramsey\Uuid\Uuid;
+use Illuminate\Support\Facades\Cache;
 
 class TaskController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         try {
+            $perPage = $request->input('per_page', 10);
+            $perPage = min(max($perPage, 1), 100);
             $user = Auth::user();
-            $tasks = Task::where('user_id', $user->user_id)
-                ->whereNull('deleted_at')
-                ->where('status', true)
-                ->get();
 
-            return response()->json($tasks);
+            // Crear una clave única para el caché basada en los parámetros de la solicitud
+            $cacheKey = 'tasks_' . $user->user_id . '_'
+                . $perPage . '_'
+                . $request->input('start_date', '') . '_'
+                . $request->input('end_date', '') . '_'
+                . $request->input('status_code', '') . '_'
+                . $request->input('search', '');
+
+            // Usar tags para todas las claves de caché
+            return Cache::tags(['tasks_' . $user->user_id])->remember($cacheKey, now()->addMinutes(10), function () use ($request, $user, $perPage) {
+                $query = Task::select('tasks.*', 'status.description as status_description', 'status.color as status_color')
+                    ->join('status', 'tasks.status_code', '=', 'status.status_code')
+                    ->where('user_id', $user->user_id)
+                    ->whereNull('deleted_at')
+                    ->where('tasks.status', true);
+
+                // Filtro por rango de fechas de creación
+                if ($request->has('start_date')) {
+                    $query->whereDate('created_at', '>=', $request->input('start_date'));
+                }
+                if ($request->has('end_date')) {
+                    $query->whereDate('created_at', '<=', $request->input('end_date'));
+                }
+
+                if ($request->has('status_code')) {
+                    $query->where('status_code', '=', $request->input('status_code'));
+                }
+
+                // Filtro por búsqueda en título y descripción
+                if ($request->has('search')) {
+                    $searchTerm = $request->input('search');
+                    $query->where(function ($q) use ($searchTerm) {
+                        $q
+                            ->where('title', 'like', '%' . $searchTerm . '%')
+                            ->orWhere('description', 'like', '%' . $searchTerm . '%');
+                    });
+                }
+
+                $tasks = $query->orderBy('created_at', 'desc')->paginate($perPage);
+
+                return response()->json([
+                    'data' => $tasks->items(),
+                    'current_page' => $tasks->currentPage(),
+                    'per_page' => $tasks->perPage(),
+                    'last_page' => $tasks->lastPage(),
+                    'total' => $tasks->total(),
+                    'filters' => [
+                        'search' => $request->input('search'),
+                        'start_date' => $request->input('start_date'),
+                        'end_date' => $request->input('end_date'),
+                    ],
+                ]);
+            });
         } catch (\Exception $e) {
             return response()->json([
-                'success' => false,
                 'message' => 'Error al recuperar las tareas',
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -34,25 +83,28 @@ class TaskController extends Controller
     {
         try {
             $user = Auth::user();
-            $task = Task::where('user_id', $user->user_id)
-                ->whereNull('deleted_at')
-                ->where('status', true)
-                ->where('task_id', $task_id)
-                ->first();
+            $cacheKey = 'task_' . $task_id . '_' . $user->user_id;
+
+            // Usar tags para la caché de tareas individuales
+            $task = Cache::tags(['task_' . $user->user_id])->remember($cacheKey, now()->addMinutes(10), function () use ($user, $task_id) {
+                return Task::where('user_id', $user->user_id)
+                    ->whereNull('deleted_at')
+                    ->where('status', true)
+                    ->where('task_id', $task_id)
+                    ->first();
+            });
 
             if (!$task) {
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Tarea no encontrada'
+                    'message' => 'Tarea no encontrada',
                 ], 404);
             }
 
             return response()->json($task);
         } catch (\Exception $e) {
             return response()->json([
-                'success' => false,
                 'message' => 'Error al recuperar la tarea',
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -69,23 +121,25 @@ class TaskController extends Controller
             ]);
 
             $user = Auth::user();
+
+            // Invalidar la caché de la lista de tareas
+            Cache::tags(['tasks_' . $user->user_id])->flush();
+
             $task = Task::create([
-                'task_id' => Uuid::uuid4()->toString(),
                 'user_id' => $user->user_id,
                 'title' => $validated['title'],
                 'description' => $validated['description'] ?? null,
                 'due_date' => $validated['due_date'],
                 'reminder_offset_minutes' => $validated['reminder_offset_minutes'] ?? null,
-                // 'status' => $validated['status'] ?? true,
+                'status' => true,
                 'previous_task_id' => $validated['previous_task_id'] ?? null,
             ]);
 
             return response()->json($task, 201);
-        } catch (\Throwable $th) {
+        } catch (\Exception $e) {
             return response()->json([
-                'success' => false,
-                'data' => $th,
-                'message' => 'Tarea creada exitosamente'
+                'message' => 'Error al crear la tarea',
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -95,18 +149,20 @@ class TaskController extends Controller
         try {
             $task = Task::where('task_id', $task_id)
                 ->where('user_id', Auth::id())
+                ->whereNull('deleted_at')
                 ->first();
 
             if (!$task) {
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Tarea no encontrada'
+                    'message' => 'Tarea no encontrada',
                 ], 404);
             }
 
-            // Guardar el estado actual en el historial antes de actualizar
+            // Invalidar la caché de la tarea específica y la lista de tareas
+            Cache::tags(['task_' . Auth::id()])->flush();
+            Cache::tags(['tasks_' . Auth::id()])->flush();
+
             TaskHistory::create([
-                'history_id' => \Str::uuid(),
                 'task_id' => $task->task_id,
                 'title' => $task->title,
                 'description' => $task->description,
@@ -124,7 +180,7 @@ class TaskController extends Controller
                 'file' => 'nullable|file|mimes:pdf,jpg,png|max:5120',
             ]);
 
-            $task->update($validated);
+            $task->update(array_filter($validated, fn($value) => !is_null($value)));
 
             if ($request->hasFile('file')) {
                 $task->file_path = $request->file('file')->store('tasks', 'public');
@@ -134,15 +190,13 @@ class TaskController extends Controller
             return response()->json($task);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
-                'success' => false,
                 'message' => 'Error de validación',
-                'errors' => $e->errors()
+                'errors' => $e->errors(),
             ], 422);
         } catch (\Exception $e) {
             return response()->json([
-                'success' => false,
                 'message' => 'Error al actualizar la tarea',
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -151,7 +205,7 @@ class TaskController extends Controller
     {
         try {
             $user = Auth::user();
-            
+
             // Obtener la tarea actual
             $currentTask = Task::where('task_id', $task_id)
                 ->where('user_id', $user->user_id)
@@ -160,8 +214,7 @@ class TaskController extends Controller
 
             if (!$currentTask) {
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Tarea no encontrada'
+                    'message' => 'Tarea no encontrada',
                 ], 404);
             }
 
@@ -180,44 +233,53 @@ class TaskController extends Controller
                 'status' => $currentTask->status,
                 'due_date' => $currentTask->due_date,
                 'reminder_offset_minutes' => $currentTask->reminder_offset_minutes,
-                'is_current' => true
+                'is_current' => true,
             ];
-            
+
             array_unshift($history, $currentTaskData);
 
             return response()->json($history);
         } catch (\Exception $e) {
             return response()->json([
-                'success' => false,
                 'message' => 'Error al recuperar el historial',
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
     public function remove(string $task_id): JsonResponse
     {
-        $user = Auth::user();
+        try {
+            $user = Auth::user();
 
-        // Buscar la tarea
-        $task = Task::where('task_id', $task_id)
-            ->where('user_id', $user->user_id)
-            ->whereNull('deleted_at')
-            ->where('status', true)
-            ->first();
+            // Buscar la tarea
+            $task = Task::where('task_id', $task_id)
+                ->where('user_id', $user->user_id)
+                ->whereNull('deleted_at')
+                ->where('status', true)
+                ->first();
 
-        if (!$task) {
+            if (!$task) {
+                return response()->json([
+                    'message' => 'Tarea no encontrada, no pertenece al usuario o ya está inactiva',
+                ], 404);
+            }
+
+            // Invalidar la caché de la tarea específica y la lista de tareas
+            Cache::tags(['task_' . $user->user_id])->flush();
+            Cache::tags(['tasks_' . $user->user_id])->flush();
+
+            // Realizar eliminación suave
+            $task->delete();
+
             return response()->json([
-                'success' => false,
-                'message' => 'Tarea no encontrada, no pertenece al usuario o ya está inactiva'
-            ], 404);
+                'message' => 'Tarea eliminada exitosamente',
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al eliminar la tarea',
+                'error' => $e->getMessage(),
+            ], 500);
         }
-
-        // Realizar eliminación suave
-        $task->delete();
-
-        return response()->json([
-            'message' => 'Tarea eliminada exitosamente'
-        ], 200);
     }
 }

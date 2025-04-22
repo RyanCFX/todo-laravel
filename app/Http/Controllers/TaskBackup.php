@@ -13,25 +13,45 @@ class TaskController extends Controller
 {
     public function index(): JsonResponse
     {
-        $user = Auth::user();
-        $tasks = Task::where('user_id', $user->user_id)
-            ->whereNull('deleted_at')
-            ->where('status', true)
-            ->get();
+        try {
+            $user = Auth::user();
+            $tasks = Task::where('user_id', $user->user_id)
+                ->whereNull('deleted_at')
+                ->where('status', true)
+                ->get();
 
-        return response()->json($tasks);
+            return response()->json($tasks);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al recuperar las tareas',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function getTaskById(string $task_id): JsonResponse
     {
-        $user = Auth::user();
-        $task = Task::where('user_id', $user->user_id)
-            ->whereNull('deleted_at')
-            ->where('status', true)
-            ->where('task_id', $task_id)
-            ->first();
+        try {
+            $user = Auth::user();
+            $task = Task::where('user_id', $user->user_id)
+                ->whereNull('deleted_at')
+                ->where('status', true)
+                ->where('task_id', $task_id)
+                ->first();
 
-        return response()->json($task);
+            if (!$task) {
+                return response()->json([
+                    'message' => 'Tarea no encontrada'
+                ], 404);
+            }
+
+            return response()->json($task);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al recuperar la tarea',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function store(Request $request): JsonResponse
@@ -60,65 +80,110 @@ class TaskController extends Controller
             return response()->json($task, 201);
         } catch (\Throwable $th) {
             return response()->json([
-                'success' => false,
                 'data' => $th,
                 'message' => 'Tarea creada exitosamente'
             ], 500);
         }
     }
 
-    public function update(Request $request, string $task_id)
+    public function update(Request $request, string $task_id): JsonResponse
     {
-        $task = Task::where('task_id', $task_id)->where('user_id', Auth::id())->firstOrFail();
+        try {
+            $task = Task::where('task_id', $task_id)
+                ->where('user_id', Auth::id())
+                ->first();
 
-        // Guardar el estado actual en el historial antes de actualizar
-        TaskHistory::create([
-            'history_id' => \Str::uuid(),
-            'task_id' => $task->task_id,
-            'title' => $task->title,
-            'description' => $task->description,
-            'status' => $task->status,
-            'due_date' => $task->due_date,
-            'reminder_offset_minutes' => $task->reminder_offset_minutes,
-        ]);
+            if (!$task) {
+                return response()->json([
+                    'message' => 'Tarea no encontrada'
+                ], 404);
+            }
 
-        $validated = $request->validate([
-            'title' => 'nullable|string|max:255',
-            'description' => 'nullable|string',
-            'due_date' => 'nullable|date',
-            'reminder_offset_minutes' => 'nullable|integer|in:5,10,15,20,30,60,1440',
-            'status' => 'nullable|boolean',
-            'file' => 'nullable|file|mimes:pdf,jpg,png|max:5120',
-        ]);
+            // Guardar el estado actual en el historial antes de actualizar
+            TaskHistory::create([
+                'history_id' => \Str::uuid(),
+                'task_id' => $task->task_id,
+                'title' => $task->title,
+                'description' => $task->description,
+                'status' => $task->status,
+                'due_date' => $task->due_date,
+                'reminder_offset_minutes' => $task->reminder_offset_minutes,
+            ]);
 
-        $task->update($validated);
+            $validated = $request->validate([
+                'title' => 'nullable|string|max:255',
+                'description' => 'nullable|string',
+                'due_date' => 'nullable|date',
+                'reminder_offset_minutes' => 'nullable|integer|in:5,10,15,20,30,60,1440',
+                'status' => 'nullable|boolean',
+                'file' => 'nullable|file|mimes:pdf,jpg,png|max:5120',
+            ]);
 
-        if ($request->hasFile('file')) {
-            $task->file_path = $request->file('file')->store('tasks', 'public');
-            $task->save();
+            $task->update($validated);
+
+            if ($request->hasFile('file')) {
+                $task->file_path = $request->file('file')->store('tasks', 'public');
+                $task->save();
+            }
+
+            return response()->json($task);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'message' => 'Error de validación',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al actualizar la tarea',
+                'error' => $e->getMessage()
+            ], 500);
         }
-
-        return response()->json($task);
     }
 
     public function history(string $task_id): JsonResponse
     {
-        $user = Auth::user();
-        $history = [];
-        $currentTask = Task::where('task_id', $task_id)
-            ->where('user_id', $user->user_id)
-            ->first();
+        try {
+            $user = Auth::user();
 
-        while ($currentTask) {
-            $history[] = $currentTask;
-            $currentTask = $currentTask->previous_task_id
-                ? Task::where('task_id', $currentTask->previous_task_id)
-                    ->where('user_id', $user->user_id)
-                    ->first()
-                : null;
+            // Obtener la tarea actual
+            $currentTask = Task::where('task_id', $task_id)
+                ->where('user_id', $user->user_id)
+                ->whereNull('deleted_at')
+                ->first();
+
+            if (!$currentTask) {
+                return response()->json([
+                    'message' => 'Tarea no encontrada'
+                ], 404);
+            }
+
+            // Obtener el historial de la tarea
+            $history = TaskHistory::where('task_id', $task_id)
+                ->orderBy('created_at', 'desc')
+                ->get()
+                ->toArray();
+
+            // Agregar la versión actual de la tarea al inicio del historial
+            $currentTaskData = [
+                'history_id' => null,
+                'task_id' => $currentTask->task_id,
+                'title' => $currentTask->title,
+                'description' => $currentTask->description,
+                'status' => $currentTask->status,
+                'due_date' => $currentTask->due_date,
+                'reminder_offset_minutes' => $currentTask->reminder_offset_minutes,
+                'is_current' => true
+            ];
+
+            array_unshift($history, $currentTaskData);
+
+            return response()->json($history);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al recuperar el historial',
+                'error' => $e->getMessage()
+            ], 500);
         }
-
-        return response()->json($history);
     }
 
     public function remove(string $task_id): JsonResponse
@@ -134,7 +199,6 @@ class TaskController extends Controller
 
         if (!$task) {
             return response()->json([
-                'success' => false,
                 'message' => 'Tarea no encontrada, no pertenece al usuario o ya está inactiva'
             ], 404);
         }
