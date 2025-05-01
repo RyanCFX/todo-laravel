@@ -31,42 +31,41 @@ cd todo-laravel
 
 ### 2. Configurar Variables de Entorno
 
-Copia el archivo .env.sample (ajusta los valores según tu entorno):
+Copia el archivo .env.example (ajusta los valores según tu entorno):
 
 ```bash
-cp .env.sample .env
+cp .env.example .env
 ```
 
-### 3. Construir y Levantar los Contenedores
+### 3. Instala composer, la forma puede variar por sistema operativo, la forma de hacerlo en linux es la siguiente
+
+```bash
+apt update && apt install -y composer && apt install -y php-xml
+
+```
+
+
+### 4. Genera la clave de la aplicación y configura los permisos de almacenamiento
+
+```bash
+php artisan key:generate && chmod -R 777 storage bootstrap/cache
+
+```
+
+### 5. Instala las dependencias del proyecto
+
+```bash
+composer install
+
+```
+
+### 6. Construir y Levantar los Contenedores
 
 ```bash
 # Construir y levantar los contenedores
 docker-compose up -d --build
 
 ```
-
-### 4. Configuración Inicial del Proyecto
-
-```bash
-# Generar clave de la aplicación
-docker-compose exec app php artisan key:generate
-
-# Generar clave JWT
-docker-compose exec app php artisan jwt:secret
-
-# Generar documentación Swagger
-docker-compose exec app php artisan l5-swagger:generate
-```
-
-## Estructura de Contenedores
-
-El proyecto utiliza varios contenedores Docker:
-
-- **app**: Contenedor principal de PHP/Laravel
-- **nginx**: Servidor web que actúa como proxy inverso
-- **redis**: Cache y gestión de sesiones
-
-## Endpoints Principales
 
 La documentación completa de la API está disponible en `/api/documentation` una vez que el proyecto esté en ejecución.
 
