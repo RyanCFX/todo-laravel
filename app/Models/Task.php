@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Task extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     public $timestamps = false;
     protected $table = 'tasks';
@@ -33,6 +33,9 @@ class Task extends Model
         'task_id' => 'string',
         'user_id' => 'string',
         'role_id' => 'string',
+        'status' => 'boolean',
+        'due_date' => 'datetime',
+        'reminder_offset_minutes' => 'integer'
     ];
 
     public function attachments()
@@ -43,5 +46,10 @@ class Task extends Model
     public function notifications()
     {
         return $this->hasMany(Notification::class, 'task_id', 'task_id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
     }
 }

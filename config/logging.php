@@ -4,6 +4,8 @@ use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
 use Monolog\Processor\PsrLogMessageProcessor;
+use Monolog\Formatter\JsonFormatter;
+use App\Logging\RotatingFileHandler;
 
 return [
 
@@ -125,6 +127,46 @@ return [
 
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
+        ],
+
+        'general' => [
+            'driver' => 'monolog',
+            'level' => 'debug',
+            'handler' => RotatingFileHandler::class,
+            'formatter' => JsonFormatter::class,
+            'formatter_with' => [
+                'format' => JsonFormatter::BATCH_MODE_JSON,
+                'includeStacktraces' => true,
+            ],
+            'handler_with' => [
+                'stream' => storage_path('logs/general/general.json'),
+                'filePermission' => 0664,
+                'useLocking' => true,
+                'maxFileSize' => env('LOG_MAX_FILE_SIZE', 10 * 1024 * 1024), // 10MB por defecto
+                'maxTime' => env('LOG_MAX_TIME', 5 * 60 * 60), // 5 horas por defecto
+                'enabled' => env('LOGGING_ENABLED', true),
+            ],
+            'processors' => [PsrLogMessageProcessor::class],
+        ],
+
+        'errors' => [
+            'driver' => 'monolog',
+            'level' => 'error',
+            'handler' => RotatingFileHandler::class,
+            'formatter' => JsonFormatter::class,
+            'formatter_with' => [
+                'format' => JsonFormatter::BATCH_MODE_JSON,
+                'includeStacktraces' => true,
+            ],
+            'handler_with' => [
+                'stream' => storage_path('logs/errors/error.json'),
+                'filePermission' => 0664,
+                'useLocking' => true,
+                'maxFileSize' => env('LOG_MAX_FILE_SIZE', 10 * 1024 * 1024), // 10MB por defecto
+                'maxTime' => env('LOG_MAX_TIME', 5 * 60 * 60), // 5 horas por defecto
+                'enabled' => env('LOGGING_ENABLED', true),
+            ],
+            'processors' => [PsrLogMessageProcessor::class],
         ],
     ],
 

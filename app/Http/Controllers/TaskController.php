@@ -2,15 +2,35 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Attachment;
 use App\Models\Task;
 use App\Models\TaskHistory;
+use App\Models\Notification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Carbon\Carbon;
+use Ramsey\Uuid\Uuid;
+use SimpleXMLElement;
 
 class TaskController extends Controller
 {
+    /**
+     * @OA\Get(
+     *     path="/tasks",
+     *     tags={"Tareas"},
+     *     summary="Listar tareas",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Response(
+     *         response=200,
+     *         description="Lista de tareas obtenida exitosamente"
+     *     )
+     * )
+     */
     public function index(Request $request): JsonResponse
     {
         try {
@@ -28,7 +48,16 @@ class TaskController extends Controller
 
             // Usar tags para todas las claves de caché
             return Cache::tags(['tasks_' . $user->user_id])->remember($cacheKey, now()->addMinutes(10), function () use ($request, $user, $perPage) {
-                $query = Task::select('tasks.*', 'status.description as status_description', 'status.color as status_color')
+                $query = Task::select(
+                    'tasks.task_id',
+                    'tasks.title',
+                    'tasks.description',
+                    'tasks.due_date',
+                    'tasks.status',
+                    'tasks.status_code',
+                    'status.description as status_description',
+                    'status.color as status_color'
+                )
                     ->join('status', 'tasks.status_code', '=', 'status.status_code')
                     ->where('user_id', $user->user_id)
                     ->whereNull('deleted_at')
@@ -58,8 +87,22 @@ class TaskController extends Controller
 
                 $tasks = $query->orderBy('created_at', 'desc')->paginate($perPage);
 
+                $formattedTasks = collect($tasks->items())->map(function ($task) {
+                    return [
+                        'task_id' => $task->task_id,
+                        'title' => $task->title,
+                        'description' => $task->description,
+                        'due_date' => $task->due_date,
+                        'status' => [
+                            'code' => $task->status_code,
+                            'description' => $task->status_description,
+                            'color' => $task->status_color,
+                        ],
+                    ];
+                });
+
                 return response()->json([
-                    'data' => $tasks->items(),
+                    'data' => $formattedTasks,
                     'current_page' => $tasks->currentPage(),
                     'per_page' => $tasks->perPage(),
                     'last_page' => $tasks->lastPage(),
@@ -79,6 +122,24 @@ class TaskController extends Controller
         }
     }
 
+    /**
+     * @OA\Get(
+     *     path="/tasks/{task_id}",
+     *     tags={"Tareas"},
+     *     summary="Obtener tarea",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="task_id",
+     *         in="path",
+     *         required=true,
+     *         @OA\Schema(type="string", format="uuid")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Tarea obtenida exitosamente"
+     *     )
+     * )
+     */
     public function getTaskById(string $task_id): JsonResponse
     {
         try {
@@ -87,11 +148,46 @@ class TaskController extends Controller
 
             // Usar tags para la caché de tareas individuales
             $task = Cache::tags(['task_' . $user->user_id])->remember($cacheKey, now()->addMinutes(10), function () use ($user, $task_id) {
-                return Task::where('user_id', $user->user_id)
-                    ->whereNull('deleted_at')
-                    ->where('status', true)
-                    ->where('task_id', $task_id)
+                $task = Task::select(
+                    'tasks.*',
+                    'status.description as status_description',
+                    'status.color as status_color'
+                )
+                    ->join('status', 'tasks.status_code', '=', 'status.status_code')
+                    ->where('tasks.user_id', $user->user_id)
+                    ->whereNull('tasks.deleted_at')
+                    ->where('tasks.status', true)
+                    ->where('tasks.task_id', $task_id)
                     ->first();
+
+                if ($task) {
+                    // Obtener los archivos adjuntos
+                    $attachments = $task
+                        ->attachments()
+                        ->select([
+                            'attachment_id',
+                            'file_name',
+                            'file_path',
+                            'file_type',
+                            'file_size',
+                            'created_at'
+                        ])
+                        ->get()
+                        ->map(function ($attachment) {
+                            return [
+                                'attachment_id' => $attachment->attachment_id,
+                                'file_name' => $attachment->file_name,
+                                'file_path' => url('storage/' . $attachment->file_path),
+                                'file_type' => $attachment->file_type,
+                                'file_size' => $attachment->file_size,
+                                'created_at' => $attachment->created_at
+                            ];
+                        });
+
+                    $task->attachments = $attachments;
+                }
+
+                return $task;
             });
 
             if (!$task) {
@@ -100,7 +196,26 @@ class TaskController extends Controller
                 ], 404);
             }
 
-            return response()->json($task);
+            $formattedTask = [
+                'task_id' => $task->task_id,
+                'user_id' => $task->user_id,
+                'title' => $task->title,
+                'description' => $task->description,
+                'due_date' => $task->due_date,
+                'reminder_offset_minutes' => $task->reminder_offset_minutes,
+                'previous_task_id' => $task->previous_task_id,
+                'created_at' => $task->created_at,
+                'updated_at' => $task->updated_at,
+                'file_path' => $task->file_path,
+                'status' => [
+                    'code' => $task->status_code,
+                    'description' => $task->status_description,
+                    'color' => $task->status_color
+                ],
+                'attachments' => $task->attachments
+            ];
+
+            return response()->json($formattedTask);
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al recuperar la tarea',
@@ -109,6 +224,70 @@ class TaskController extends Controller
         }
     }
 
+    private function createNotification(Task $task): void
+    {
+            if ($task->reminder_offset_minutes) {
+            $scheduledAt = Carbon::parse($task->due_date)
+                ->subMinutes($task->reminder_offset_minutes);
+
+            Notification::create([
+                'task_id' => $task->task_id,
+                'user_id' => $task->user_id,
+                'scheduled_at' => $scheduledAt,
+                'status' => true
+            ]);
+        }
+    }
+
+    private function deactivateTaskNotifications(string $taskId): void
+    {
+        Notification::where('task_id', $taskId)
+            ->where('status', true)
+            ->update(['status' => false]);
+    }
+
+    /**
+     * @OA\Post(
+     *     path="/tasks",
+     *     tags={"Tareas"},
+     *     summary="Crear tarea",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\RequestBody(
+     *         required=true,
+     *         @OA\JsonContent(
+     *             required={"title", "due_date"},
+     *             @OA\Property(property="title", type="string", example="Completar informe mensual"),
+     *             @OA\Property(property="description", type="string", example="Detalles del informe de ventas del mes"),
+     *             @OA\Property(property="due_date", type="string", format="date", example="2024-03-25"),
+     *             @OA\Property(property="reminder_offset_minutes", type="integer", enum={5,10,15,20,30,60,1440}, example=30),
+     *             @OA\Property(property="attachments", type="array",
+     *                 @OA\Items(
+     *                     type="object",
+     *                     @OA\Property(property="file", type="string", description="Archivo en base64"),
+     *                     @OA\Property(property="name", type="string", example="documento.pdf"),
+     *                     @OA\Property(property="type", type="string", enum={"pdf","jpg","jpeg","png"}, example="pdf")
+     *                 )
+     *             )
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=201,
+     *         description="Tarea creada exitosamente",
+     *         @OA\JsonContent(
+     *             @OA\Property(property="task_id", type="string", format="uuid"),
+     *             @OA\Property(property="title", type="string"),
+     *             @OA\Property(property="description", type="string"),
+     *             @OA\Property(property="due_date", type="string", format="date"),
+     *             @OA\Property(property="status_code", type="string"),
+     *             @OA\Property(property="created_at", type="string", format="date-time")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=422,
+     *         description="Error de validación"
+     *     )
+     * )
+     */
     public function store(Request $request): JsonResponse
     {
         try {
@@ -116,26 +295,101 @@ class TaskController extends Controller
                 'title' => 'required|string|max:255',
                 'description' => 'nullable|string',
                 'due_date' => 'required|date',
-                'reminder_offset_minutes' => 'nullable|integer',
-                'previous_task_id' => 'nullable|uuid|exists:tasks,task_id',
+                'reminder_offset_minutes' => 'nullable|integer|in:5,10,15,20,30,60,1440',
+                'attachments' => 'nullable|array',
+                'attachments.*.file' => 'required|string',  // Base64
+                'attachments.*.name' => 'required|string',
+                'attachments.*.type' => 'required|string|in:pdf,jpg,jpeg,png',
             ]);
+
+            // Validar número máximo de archivos
+            if (isset($validated['attachments']) && count($validated['attachments']) > env('MAX_ATTACHMENTS', 5)) {
+                return response()->json([
+                    'message' => 'Error de validación',
+                    'errors' => ['attachments' => ['No se pueden subir más de ' . env('MAX_ATTACHMENTS', 5) . ' archivos']],
+                ], 422);
+            }
 
             $user = Auth::user();
 
             // Invalidar la caché de la lista de tareas
             Cache::tags(['tasks_' . $user->user_id])->flush();
 
-            $task = Task::create([
-                'user_id' => $user->user_id,
-                'title' => $validated['title'],
-                'description' => $validated['description'] ?? null,
-                'due_date' => $validated['due_date'],
-                'reminder_offset_minutes' => $validated['reminder_offset_minutes'] ?? null,
-                'status' => true,
-                'previous_task_id' => $validated['previous_task_id'] ?? null,
-            ]);
+            $taskId = Str::uuid();
 
-            return response()->json($task, 201);
+            // Crear la tarea
+            $task = new Task();
+            $task->task_id = $taskId;
+            $task->user_id = $user->user_id;
+            $task->title = $validated['title'];
+            $task->description = $validated['description'] ?? null;
+            $task->due_date = $validated['due_date'];
+            $task->reminder_offset_minutes = $validated['reminder_offset_minutes'] ?? null;
+            $task->status = true;
+            $task->status_code = 'ACTIVE';
+            $task->created_at = now();
+            $task->save();
+
+            // Crear notificación si hay reminder_offset_minutes
+            $this->createNotification($task);
+
+            // Procesar archivos adjuntos
+            if (isset($validated['attachments'])) {
+                foreach ($validated['attachments'] as $attachment) {
+                    // Decodificar el archivo base64
+                    $fileData = base64_decode(preg_replace('#^data:.*?;base64,#', '', $attachment['file']));
+
+                    // Validar tamaño del archivo
+                    $fileSize = strlen($fileData);
+                    if ($fileSize > env('MAX_ATTACHMENT_SIZE', 10240) * 1024) {
+                        continue;  // Saltar archivos que excedan el tamaño máximo
+                    }
+
+                    // Generar nombre único para el archivo
+                    $extension = $attachment['type'];
+                    $fileName = $attachment['name'];
+                    $uniqueName = Str::uuid() . '_' . $fileName;
+
+                    // Guardar el archivo
+                    $filePath = env('ATTACHMENTS_PATH', 'attachments') . '/' . $uniqueName;
+                    Storage::disk('public')->put($filePath, $fileData);
+
+                    // Crear registro en la tabla attachments usando el modelo
+                    Attachment::create([
+                        'attachment_id' => Str::uuid(),
+                        'task_id' => $taskId,
+                        'file_name' => $fileName,
+                        'file_path' => $filePath,
+                        'file_type' => $attachment['type'],
+                        'file_size' => $fileSize,
+                        'created_at' => now(),
+                    ]);
+                }
+            }
+
+            // Recargar la tarea con sus archivos adjuntos
+            $task = $task->fresh(['attachments']);
+
+            return response()->json([
+                'task_id' => $task->task_id,
+                'user_id' => $task->user_id,
+                'title' => $task->title,
+                'description' => $task->description,
+                'due_date' => $task->due_date,
+                'reminder_offset_minutes' => $task->reminder_offset_minutes,
+                'status_code' => $task->status_code,
+                'created_at' => $task->created_at,
+                'attachments' => $task->attachments->map(function ($attachment) {
+                    return [
+                        'attachment_id' => $attachment->attachment_id,
+                        'file_name' => $attachment->file_name,
+                        'file_path' => url('storage/' . $attachment->file_path),
+                        'file_type' => $attachment->file_type,
+                        'file_size' => $attachment->file_size,
+                        'created_at' => $attachment->created_at
+                    ];
+                })
+            ], 201);
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al crear la tarea',
@@ -144,6 +398,50 @@ class TaskController extends Controller
         }
     }
 
+    /**
+     * @OA\Put(
+     *     path="/tasks/{task_id}",
+     *     tags={"Tareas"},
+     *     summary="Actualizar tarea",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="task_id",
+     *         in="path",
+     *         required=true,
+     *         @OA\Schema(type="string", format="uuid")
+     *     ),
+     *     @OA\RequestBody(
+     *         required=true,
+     *         @OA\JsonContent(
+     *             @OA\Property(property="title", type="string", example="Completar informe mensual actualizado"),
+     *             @OA\Property(property="description", type="string", example="Nueva descripción del informe"),
+     *             @OA\Property(property="due_date", type="string", format="date", example="2024-03-26"),
+     *             @OA\Property(property="reminder_offset_minutes", type="integer", enum={5,10,15,20,30,60,1440}, example=60),
+     *             @OA\Property(property="status", type="boolean", example=true)
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Tarea actualizada exitosamente",
+     *         @OA\JsonContent(
+     *             @OA\Property(property="task_id", type="string", format="uuid"),
+     *             @OA\Property(property="title", type="string"),
+     *             @OA\Property(property="description", type="string"),
+     *             @OA\Property(property="due_date", type="string", format="date"),
+     *             @OA\Property(property="status_code", type="string"),
+     *             @OA\Property(property="updated_at", type="string", format="date-time")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Tarea no encontrada"
+     *     ),
+     *     @OA\Response(
+     *         response=422,
+     *         description="Error de validación"
+     *     )
+     * )
+     */
     public function update(Request $request, string $task_id): JsonResponse
     {
         try {
@@ -180,7 +478,17 @@ class TaskController extends Controller
                 'file' => 'nullable|file|mimes:pdf,jpg,png|max:5120',
             ]);
 
+            // Si se actualiza el reminder_offset_minutes, desactivar notificaciones existentes
+            if (isset($validated['reminder_offset_minutes']) && $validated['reminder_offset_minutes'] !== $task->reminder_offset_minutes) {
+                $this->deactivateTaskNotifications($task_id);
+            }
+
             $task->update(array_filter($validated, fn($value) => !is_null($value)));
+
+            // Si se actualizó el reminder_offset_minutes, crear nueva notificación
+            if (isset($validated['reminder_offset_minutes'])) {
+                $this->createNotification($task);
+            }
 
             if ($request->hasFile('file')) {
                 $task->file_path = $request->file('file')->store('tasks', 'public');
@@ -201,6 +509,39 @@ class TaskController extends Controller
         }
     }
 
+    /**
+     * @OA\Get(
+     *     path="/tasks/{task_id}/history",
+     *     summary="Historial de tarea",
+     *     description="Obtiene el historial de cambios de estado de una tarea",
+     *     operationId="taskHistory",
+     *     tags={"Tareas"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="task_id",
+     *         in="path",
+     *         description="ID de la tarea",
+     *         required=true,
+     *         @OA\Schema(type="string", format="uuid")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Historial de la tarea",
+     *         @OA\JsonContent(
+     *             type="array",
+     *             @OA\Items(
+     *                 type="object",
+     *                 @OA\Property(property="id", type="integer"),
+     *                 @OA\Property(property="task_id", type="string", format="uuid"),
+     *                 @OA\Property(property="old_status", type="string"),
+     *                 @OA\Property(property="new_status", type="string"),
+     *                 @OA\Property(property="changed_by", type="string", format="uuid"),
+     *                 @OA\Property(property="created_at", type="string", format="date-time")
+     *             )
+     *         )
+     *     )
+     * )
+     */
     public function history(string $task_id): JsonResponse
     {
         try {
@@ -247,6 +588,24 @@ class TaskController extends Controller
         }
     }
 
+    /**
+     * @OA\Delete(
+     *     path="/tasks/{task_id}",
+     *     tags={"Tareas"},
+     *     summary="Eliminar tarea",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="task_id",
+     *         in="path",
+     *         required=true,
+     *         @OA\Schema(type="string", format="uuid")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Tarea eliminada exitosamente"
+     *     )
+     * )
+     */
     public function remove(string $task_id): JsonResponse
     {
         try {
@@ -256,29 +615,27 @@ class TaskController extends Controller
             $task = Task::where('task_id', $task_id)
                 ->where('user_id', $user->user_id)
                 ->whereNull('deleted_at')
-                ->where('status', true)
                 ->first();
 
             if (!$task) {
                 return response()->json([
-                    'message' => 'Tarea no encontrada, no pertenece al usuario o ya está inactiva',
+                    'message' => 'Tarea no encontrada, no pertenece al usuario o ya está inactiva'
                 ], 404);
             }
 
-            // Invalidar la caché de la tarea específica y la lista de tareas
-            Cache::tags(['task_' . $user->user_id])->flush();
-            Cache::tags(['tasks_' . $user->user_id])->flush();
+            // Desactivar notificaciones de la tarea
+            $this->deactivateTaskNotifications($task_id);
 
             // Realizar eliminación suave
             $task->delete();
 
             return response()->json([
-                'message' => 'Tarea eliminada exitosamente',
+                'message' => 'Tarea eliminada exitosamente'
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al eliminar la tarea',
-                'error' => $e->getMessage(),
+                'error' => $e->getMessage()
             ], 500);
         }
     }

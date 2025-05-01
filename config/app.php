@@ -159,6 +159,7 @@ return [
         /*
          * Package Service Providers...
          */
+        Artisaninweb\SoapWrapper\ServiceProvider::class,
 
         /*
          * Application Service Providers...
