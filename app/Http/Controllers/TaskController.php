@@ -256,8 +256,8 @@ class TaskController extends Controller
      *         required=true,
      *         @OA\JsonContent(
      *             required={"title", "due_date"},
-     *             @OA\Property(property="title", type="string", example="Completar informe mensual"),
-     *             @OA\Property(property="description", type="string", example="Detalles del informe de ventas del mes"),
+     *             @OA\Property(property="title", type="string", example="Titulo de tarea"),
+     *             @OA\Property(property="description", type="string", example="Descripción de tarea"),
      *             @OA\Property(property="due_date", type="string", format="date", example="2024-03-25"),
      *             @OA\Property(property="reminder_offset_minutes", type="integer", enum={5,10,15,20,30,60,1440}, example=30),
      *             @OA\Property(property="attachments", type="array",
@@ -413,7 +413,7 @@ class TaskController extends Controller
      *     @OA\RequestBody(
      *         required=true,
      *         @OA\JsonContent(
-     *             @OA\Property(property="title", type="string", example="Completar informe mensual actualizado"),
+     *             @OA\Property(property="title", type="string", example="Titulo de tarea actualizado"),
      *             @OA\Property(property="description", type="string", example="Nueva descripción del informe"),
      *             @OA\Property(property="due_date", type="string", format="date", example="2024-03-26"),
      *             @OA\Property(property="reminder_offset_minutes", type="integer", enum={5,10,15,20,30,60,1440}, example=60),

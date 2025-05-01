@@ -368,11 +368,11 @@
                                 "properties": {
                                     "title": {
                                         "type": "string",
-                                        "example": "Completar informe mensual"
+                                        "example": "Titulo de tarea"
                                     },
                                     "description": {
                                         "type": "string",
-                                        "example": "Detalles del informe de ventas del mes"
+                                        "example": "Descripción de tarea"
                                     },
                                     "due_date": {
                                         "type": "string",
@@ -523,7 +523,7 @@
                                 "properties": {
                                     "title": {
                                         "type": "string",
-                                        "example": "Completar informe mensual actualizado"
+                                        "example": "Titulo de tarea actualizado"
                                     },
                                     "description": {
                                         "type": "string",
