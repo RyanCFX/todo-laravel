@@ -203,7 +203,6 @@ class TaskController extends Controller
             ], 404);
         }
 
-        // Realizar eliminación suave
         $task->delete();
 
         return response()->json([
