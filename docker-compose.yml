@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # Servicio de la aplicación Laravel
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: todo-app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./:/var/www
+    networks:
+      - todo-network
+
+  # Servidor web Nginx
+  nginx:
+    image: nginx:alpine
+    container_name: todo-nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./:/var/www
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d
+    networks:
+      - todo-network
+
+  # Servicio Redis
+  redis:
+    image: redis:alpine
+    container_name: todo-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    networks:
+      - todo-network
+
+networks:
+  todo-network:
+    driver: bridge 
