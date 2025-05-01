@@ -25,7 +25,7 @@ API REST desarrollada con Laravel para gestión de tareas, con soporte para aute
 ### 1. Clonar el Repositorio
 
 ```bash
-git clone <url-del-repositorio>
+git clone https://github.com/RyanCFX/todo-laravel
 cd todo-laravel
 ```
 
